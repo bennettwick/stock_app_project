@@ -12,15 +12,20 @@ from datetime import date, timedelta
 import math
 
 # -- Page configuration ----------------------------------
-# st.set_page_config must be the FIRST Streamlit command in the script.
-# If you add any other st.* calls above this line, you'll get an error.
 st.set_page_config(page_title="Stock Analyzer", layout="wide")
 st.title("Stock Analysis Dashboard")
 
 # -- Sidebar: user inputs --------------------------------
 st.sidebar.header("Settings")
 
-ticker = st.sidebar.text_input("Stock Ticker", value="AAPL").upper().strip()
+# 1. Accept a comma-separated list of tickers
+ticker_input = st.sidebar.text_input("Stock Tickers (comma-separated)", value="AAPL, MSFT").upper().strip()
+tickers = [t.strip() for t in ticker_input.split(",") if t.strip()]
+
+# 2. Validate that there are between 2 and 5 tickers
+if not (2 <= len(tickers) <= 5):
+    st.sidebar.warning("Please enter between 2 and 5 valid ticker symbols.")
+    st.stop()
 
 # Default date range: one year back from today
 default_start = date.today() - timedelta(days=365)
@@ -31,80 +36,79 @@ if start_date is None or end_date is None:
     st.sidebar.warning("Please select both start and end dates.")
     st.stop()
 
-# Validate that the date range makes sense
 if start_date >= end_date:
     st.sidebar.error("Start date must be before end date.")
     st.stop()
 
+# 3. Enforce a minimum date range of 1 year (365 days)
+if (end_date - start_date).days < 365:
+    st.sidebar.error("The date range must be at least 1 year (365 days).")
+    st.stop()
+
 # -- Data download ----------------------------------------
-# We wrap the download in st.cache_data so repeated runs with
-# the same inputs don't re-download every time. The ttl (time-to-live)
-# ensures the cache expires after one hour so data stays fresh.
+# 4. Download tickers + S&P 500, wrapped in try/except
 @st.cache_data(show_spinner="Fetching data...", ttl=3600)
-def load_data(ticker: str, start: date, end: date) -> pd.DataFrame:
-    """Download daily data from Yahoo Finance for a given date range."""
-    df = yf.download(ticker, start=start, end=end, progress=False)
-    return df
+def load_data(ticker_list: list, start: date, end: date) -> pd.DataFrame:
+    """Download daily adjusted close data from Yahoo Finance."""
+    # Append the S&P 500 benchmark
+    download_list = ticker_list + ["^GSPC"]
+    
+    try:
+        # Download data (returns a MultiIndex DataFrame for multiple tickers)
+        df_raw = yf.download(download_list, start=start, end=end, progress=False)
+        
+        if df_raw.empty:
+            return pd.DataFrame()
+            
+        # Extract the 'Adj Close' level to account for dividends and splits
+        if "Adj Close" in df_raw.columns.levels[0]:
+            df_prices = df_raw["Adj Close"]
+        elif "Close" in df_raw.columns.levels[0]:
+            df_prices = df_raw["Close"]
+        else:
+            df_prices = df_raw
+            
+        return df_prices
+
+    except Exception as e:
+        # Raise to be caught in the main logic block
+        raise Exception(f"API Error: {e}")
 
 # -- Main logic -------------------------------------------
-if ticker:
-    try:
-        df = load_data(ticker, start_date, end_date)
-    except Exception as e:
-        st.error(f"Failed to download data: {e}")
-        st.stop()
+try:
+    df = load_data(tickers, start_date, end_date)
+except Exception as e:
+    st.error(f"Failed to download data: {e}")
+    st.stop()
 
-    if df.empty:
-        st.error(
-            f"No data found for **{ticker}**. "
-            "Check the ticker symbol and try again."
-        )
-        st.stop()
+if df.empty:
+    st.error("No data found for the provided tickers. Check the symbols and try again.")
+    st.stop()
 
-    # Flatten any multi-level columns that yfinance sometimes returns
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+# Check if any user-requested tickers completely failed to download
+missing_tickers = [t for t in tickers + ["^GSPC"] if t not in df.columns]
+if missing_tickers:
+    st.error(f"Failed to download data for: {', '.join(missing_tickers)}. Please ensure all tickers are valid.")
+    st.stop()
 
-    # -- Compute a derived column -------------------------
-    df["Daily Return"] = df["Close"].pct_change()
+# 5. Handle partial data by dropping NaNs and issuing a warning
+initial_rows = len(df)
+df = df.dropna()
 
-    # -- Key metrics --------------------------------------
-    latest_close = float(df["Close"].iloc[-1])
-    total_return = float((df["Close"].iloc[-1] / df["Close"].iloc[0]) - 1)
-    volatility = float(df["Daily Return"].std())
-    ann_volatility = volatility * math.sqrt(252)  # Annualize: daily sigma * sqrt(trading days)
-    max_close = float(df["Close"].max())
-    min_close = float(df["Close"].min())
-
-    st.subheader(f"{ticker} — Key Metrics")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Latest Close", f"${latest_close:,.2f}")
-    col2.metric("1-Year Return", f"{total_return:.2%}")
-    col3.metric("Annualized Volatility (sigma)", f"{ann_volatility:.2%}")
-
-    col4, col5, _ = st.columns(3)
-    col4.metric("Period High", f"${max_close:,.2f}")
-    col5.metric("Period Low", f"${min_close:,.2f}")
-
-    st.divider()
-
-    # -- Price chart --------------------------------------
-    st.subheader("Closing Price")
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=df.index, y=df["Close"],
-            mode="lines", name="Close Price",
-            line=dict(width=1.5)
-        )
+if len(df) < initial_rows:
+    st.warning(
+        "Some tickers had missing data for the selected date range. "
+        "The dataset has been truncated to the overlapping dates to ensure accurate comparison."
     )
-    fig.update_layout(
-        yaxis_title="Price (USD)", xaxis_title="Date",
-        template="plotly_white", height=450
-    )
-    st.plotly_chart(fig, width="stretch")
 
-else:
-    st.info("Enter a stock ticker in the sidebar to get started.")
+if df.empty:
+    st.error("After aligning the dates, no overlapping data remains. Try adjusting your date range or tickers.")
+    st.stop()
+
+# -- Temporary testing outputs ----------------------------
+st.success("Data successfully loaded and validated! The foundation is ready.")
+st.write("Preview of aligned Adjusted Closing Prices:")
+st.dataframe(df.tail())
+
+st.subheader("Price Chart Preview")
+st.line_chart(df)
