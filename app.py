@@ -214,8 +214,13 @@ with tab2:
     
     vol_window = st.selectbox(
         "Select Rolling Window (Trading Days):", 
-        options=[21, 63, 252], 
-        format_func=lambda x: "21 Days (1 Month)" if x == 21 else ("63 Days (3 Months)" if x == 63 else "252 Days (1 Year)"),
+        options=[21, 63, 126, 252], 
+        format_func=lambda x: {
+            21: "21 Days (1 Month)", 
+            63: "63 Days (3 Months)", 
+            126: "126 Days (6 Months)", 
+            252: "252 Days (1 Year)"
+        }.get(x),
         index=0
     )
     
@@ -355,7 +360,177 @@ with tab2:
     st.plotly_chart(fig_box, use_container_width=True)
 
 # =========================================================
-# TAB 3: Correlation & Portfolio (Placeholder)
+# TAB 3: Correlation & Portfolio
 # =========================================================
 with tab3:
-    st.info("Correlation & Portfolio features will go here.")
+    st.header("Correlation & Diversification Analysis")
+    
+    # 1. Correlation Heatmap
+    st.subheader("Correlation Heatmap")
+    user_returns = returns[valid_user_tickers]
+    corr_matrix = user_returns.corr()
+    
+    fig_corr = go.Figure(data=go.Heatmap(
+        z=corr_matrix.values,
+        x=corr_matrix.columns,
+        y=corr_matrix.columns,
+        colorscale='RdBu',
+        zmid=0,
+        text=np.round(corr_matrix.values, 2),
+        texttemplate="%{text}",
+        hoverinfo="z"
+    ))
+    
+    fig_corr.update_layout(
+        title="Pairwise Correlation of Daily Returns",
+        height=500,
+        template="plotly_white"
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+    
+    st.markdown("---")
+    
+    # 2. Scatter Plot & Rolling Correlation
+    st.subheader("Pairwise Analysis")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        stock_a = st.selectbox("Select Stock A:", options=valid_user_tickers, index=0)
+    with col2:
+        # Default to the second stock if available, otherwise default to the first
+        default_b_idx = 1 if len(valid_user_tickers) > 1 else 0
+        stock_b = st.selectbox("Select Stock B:", options=valid_user_tickers, index=default_b_idx)
+        
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        # Scatter Plot
+        fig_scatter = go.Figure()
+        fig_scatter.add_trace(go.Scatter(
+            x=returns[stock_a],
+            y=returns[stock_b],
+            mode='markers',
+            marker=dict(opacity=0.6, color='teal')
+        ))
+        
+        fig_scatter.update_layout(
+            title=f"Daily Returns: {stock_a} vs. {stock_b}",
+            xaxis_title=f"{stock_a} Daily Return",
+            yaxis_title=f"{stock_b} Daily Return",
+            template="plotly_white",
+            height=400
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        
+    with col4:
+        # Rolling Correlation
+        roll_corr_window = st.selectbox(
+            "Rolling Correlation Window (Trading Days):", 
+            options=[21, 63, 126, 252], 
+            format_func=lambda x: {
+                21: "21 Days (1 Month)", 
+                63: "63 Days (3 Months)", 
+                126: "126 Days (6 Months)", 
+                252: "252 Days (1 Year)"
+            }.get(x),
+            index=1 # Default to 63 Days (3 Months)
+        )
+        
+        if len(returns) > roll_corr_window:
+            rolling_corr = returns[stock_a].rolling(window=roll_corr_window).corr(returns[stock_b])
+            
+            fig_roll_corr = go.Figure()
+            fig_roll_corr.add_trace(go.Scatter(
+                x=rolling_corr.index,
+                y=rolling_corr.values,
+                mode='lines',
+                line=dict(color='purple', width=2)
+            ))
+            
+            fig_roll_corr.update_layout(
+                title=f"{roll_corr_window}-Day Rolling Correlation",
+                xaxis_title="Date",
+                yaxis_title="Correlation",
+                template="plotly_white",
+                height=400
+            )
+            st.plotly_chart(fig_roll_corr, use_container_width=True)
+        else:
+            st.warning("Not enough data to calculate rolling correlation for the selected window.")
+            
+    st.markdown("---")
+    
+    # 3. Two-Asset Portfolio Explorer
+    st.subheader("Two-Asset Portfolio Explorer")
+    
+    # Get annualized stats for the two selected assets
+    ann_ret_a = returns[stock_a].mean() * 252
+    ann_ret_b = returns[stock_b].mean() * 252
+    
+    # Annualized Covariance Matrix
+    cov_matrix = returns[[stock_a, stock_b]].cov() * 252
+    var_a = cov_matrix.loc[stock_a, stock_a]
+    var_b = cov_matrix.loc[stock_b, stock_b]
+    cov_ab = cov_matrix.loc[stock_a, stock_b]
+    
+    weight_a_pct = st.slider(f"Weight of {stock_a} (%)", min_value=0, max_value=100, value=50, step=1)
+    w_a = weight_a_pct / 100.0
+    w_b = 1.0 - w_a
+    
+    # Calculate current portfolio metrics
+    port_ret = (w_a * ann_ret_a) + (w_b * ann_ret_b)
+    port_var = (w_a**2 * var_a) + (w_b**2 * var_b) + (2 * w_a * w_b * cov_ab)
+    port_vol = np.sqrt(port_var)
+    
+    col_metric1, col_metric2 = st.columns(2)
+    col_metric1.metric("Portfolio Annualized Return", f"{port_ret:.2%}")
+    col_metric2.metric("Portfolio Annualized Volatility", f"{port_vol:.2%}")
+    
+    # Generate the Volatility Curve
+    weights_a_array = np.linspace(0, 1, 101)
+    weights_b_array = 1.0 - weights_a_array
+    
+    # Vectorized portfolio variance calculation
+    port_vols = np.sqrt(
+        (weights_a_array**2 * var_a) + 
+        (weights_b_array**2 * var_b) + 
+        (2 * weights_a_array * weights_b_array * cov_ab)
+    )
+    
+    fig_curve = go.Figure()
+    # Plot the curve
+    fig_curve.add_trace(go.Scatter(
+        x=weights_a_array * 100,
+        y=port_vols,
+        mode='lines',
+        name="Portfolio Volatility Curve",
+        line=dict(color='darkblue', width=2)
+    ))
+    
+    # Plot the current position
+    fig_curve.add_trace(go.Scatter(
+        x=[weight_a_pct],
+        y=[port_vol],
+        mode='markers',
+        name="Current Portfolio",
+        marker=dict(color='red', size=12, symbol='star')
+    ))
+    
+    fig_curve.update_layout(
+        title="Diversification Effect: Portfolio Volatility vs. Asset Weight",
+        xaxis_title=f"Weight of {stock_a} (%)",
+        yaxis_title="Portfolio Annualized Volatility",
+        template="plotly_white",
+        height=450,
+        hovermode="x"
+    )
+    st.plotly_chart(fig_curve, use_container_width=True)
+    
+    st.info(
+        """
+        💡 **Diversification Concept:** This curve demonstrates that by combining two stocks, you can produce a portfolio 
+        with lower volatility than either stock individually. This effect occurs because the assets are not perfectly correlated. 
+        As long as the correlation is less than 1.0, the curve "dips" or bows downward, 
+        showing that diversification reduces overall risk.
+        """
+    )
