@@ -27,6 +27,10 @@ default_start = date.today() - timedelta(days=365)
 start_date = st.sidebar.date_input("Start Date", value=default_start, min_value=date(1970, 1, 1))
 end_date = st.sidebar.date_input("End Date", value=date.today(), min_value=date(1970, 1, 1))
 
+if start_date is None or end_date is None:
+    st.sidebar.warning("Please select both start and end dates.")
+    st.stop()
+
 # Validate that the date range makes sense
 if start_date >= end_date:
     st.sidebar.error("Start date must be before end date.")
