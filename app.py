@@ -353,6 +353,7 @@ with tab2:
         
     fig_box.update_layout(
         yaxis_title="Daily Return",
+        xaxis_title="Stock",
         template="plotly_white",
         height=450,
         showlegend=False
