@@ -204,10 +204,155 @@ with tab1:
     st.plotly_chart(fig_wealth, use_container_width=True)
 
 # =========================================================
-# TAB 2: Risk & Distribution (Placeholder)
+# TAB 2: Risk & Distribution
 # =========================================================
 with tab2:
-    st.info("Risk & Distribution features will go here.")
+    st.header("Risk & Distribution Analysis")
+    
+    # 1. Rolling Volatility
+    st.subheader("Rolling Annualized Volatility")
+    
+    vol_window = st.selectbox(
+        "Select Rolling Window (Trading Days):", 
+        options=[21, 63, 252], 
+        format_func=lambda x: "21 Days (1 Month)" if x == 21 else ("63 Days (3 Months)" if x == 63 else "252 Days (1 Year)"),
+        index=0
+    )
+    
+    # Check if we have enough trading days to calculate the selected window
+    if len(returns) <= vol_window:
+        st.warning(
+            f"⚠️ Not enough data to calculate a {vol_window}-day rolling volatility. "
+            f"Your selected date range only contains {len(returns)} trading days. "
+            "Please select a longer date range in the sidebar."
+        )
+    else:
+        # Calculate rolling standard deviation and annualize
+        rolling_vol = returns[valid_user_tickers].rolling(window=vol_window).std() * np.sqrt(252)
+        
+        fig_rolling_vol = go.Figure()
+        for col in valid_user_tickers:
+            fig_rolling_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol[col], mode="lines", name=col, line=dict(width=1.5)))
+            
+        fig_rolling_vol.update_layout(
+            yaxis_title="Annualized Volatility", 
+            xaxis_title="Date",
+            template="plotly_white", 
+            height=450,
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_rolling_vol, use_container_width=True)
+
+    st.markdown("---")
+
+    # 2. Stock Selector for Distribution Analysis
+    st.subheader("Distribution Analysis")
+    selected_dist_stock = st.selectbox("Select a stock for distribution analysis:", options=valid_user_tickers)
+    dist_returns = returns[selected_dist_stock]
+
+    # 4. Normality Test (Jarque-Bera)
+    jb_stat, jb_pval = stats.jarque_bera(dist_returns)
+    st.write(f"**Jarque-Bera Test for {selected_dist_stock}:**")
+    # Changed .4f to .4e to display the p-value in scientific/exponential notation
+    st.write(f"Test Statistic: {jb_stat:.4f} | p-value: {jb_pval:.4e}")
+    
+    if jb_pval < 0.05:
+        st.warning(f"Result: **Rejects normality** (p < 0.05). The returns are not normally distributed.")
+    else:
+        st.success(f"Result: **Fails to reject normality** (p >= 0.05). The returns are approximately normal.")
+
+    # 3. Distribution vs. Q-Q Plot Toggle
+    plot_type = st.radio("Select Plot Type:", options=["Histogram with Normal Curve", "Q-Q Plot"], horizontal=True)
+    
+    if plot_type == "Histogram with Normal Curve":
+        # Fit normal distribution
+        mu, std = stats.norm.fit(dist_returns)
+        
+        fig_dist = go.Figure()
+        # Histogram of returns
+        fig_dist.add_trace(go.Histogram(
+            x=dist_returns, 
+            histnorm='probability density', 
+            name='Daily Returns', 
+            opacity=0.7,
+            marker_color='royalblue'
+        ))
+        
+        # Normal Curve overlay
+        xmin, xmax = dist_returns.min(), dist_returns.max()
+        x_range = np.linspace(xmin, xmax, 100)
+        p = stats.norm.pdf(x_range, mu, std)
+        fig_dist.add_trace(go.Scatter(
+            x=x_range, 
+            y=p, 
+            mode='lines', 
+            name='Fitted Normal Curve', 
+            line=dict(color='darkorange', width=3)
+        ))
+        
+        fig_dist.update_layout(
+            title=f"Return Distribution for {selected_dist_stock}",
+            xaxis_title="Daily Return",
+            yaxis_title="Density",
+            template="plotly_white",
+            height=450
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+    else:
+        # Q-Q Plot
+        (osm, osr), (slope, intercept, r) = stats.probplot(dist_returns, dist="norm", fit=True)
+        
+        fig_qq = go.Figure()
+        # Scatter of quantiles
+        fig_qq.add_trace(go.Scatter(
+            x=osm, 
+            y=osr, 
+            mode='markers', 
+            name='Data Quantiles',
+            marker=dict(color='royalblue', size=6)
+        ))
+        
+        # Line of best fit representing theoretical normal distribution
+        x_line = np.array([np.min(osm), np.max(osm)])
+        y_line = slope * x_line + intercept
+        fig_qq.add_trace(go.Scatter(
+            x=x_line, 
+            y=y_line, 
+            mode='lines', 
+            name='Theoretical Normal', 
+            line=dict(color='darkorange', width=2)
+        ))
+        
+        fig_qq.update_layout(
+            title=f"Q-Q Plot for {selected_dist_stock}",
+            xaxis_title="Theoretical Quantiles",
+            yaxis_title="Sample Quantiles",
+            template="plotly_white",
+            height=450
+        )
+        st.plotly_chart(fig_qq, use_container_width=True)
+
+    st.markdown("---")
+
+    # 5. Box Plot Comparison
+    st.subheader("Return Distributions Comparison")
+    fig_box = go.Figure()
+    
+    for col in valid_user_tickers:
+        fig_box.add_trace(go.Box(
+            y=returns[col], 
+            name=col,
+            boxpoints='outliers'
+        ))
+        
+    fig_box.update_layout(
+        yaxis_title="Daily Return",
+        template="plotly_white",
+        height=450,
+        showlegend=False
+    )
+    st.plotly_chart(fig_box, use_container_width=True)
 
 # =========================================================
 # TAB 3: Correlation & Portfolio (Placeholder)
