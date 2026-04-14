@@ -76,12 +76,22 @@ def load_data(ticker_list: list, start: date, end: date) -> pd.DataFrame:
         if df_raw.empty:
             return pd.DataFrame()
             
-        if "Adj Close" in df_raw.columns.levels[0]:
-            df_prices = df_raw["Adj Close"]
-        elif "Close" in df_raw.columns.levels[0]:
-            df_prices = df_raw["Close"]
+        # Safely check if yfinance returned a MultiIndex (multiple successful tickers)
+        if isinstance(df_raw.columns, pd.MultiIndex):
+            if "Adj Close" in df_raw.columns.levels[0]:
+                df_prices = df_raw["Adj Close"]
+            elif "Close" in df_raw.columns.levels[0]:
+                df_prices = df_raw["Close"]
+            else:
+                df_prices = df_raw
         else:
-            df_prices = df_raw
+            # Fallback for flat DataFrames (happens if only 1 ticker successfully downloads)
+            if "Adj Close" in df_raw.columns:
+                df_prices = df_raw[["Adj Close"]] # Double brackets keep it as a DataFrame
+            elif "Close" in df_raw.columns:
+                df_prices = df_raw[["Close"]]
+            else:
+                df_prices = df_raw
             
         return df_prices
 
