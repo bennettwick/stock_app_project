@@ -22,11 +22,12 @@ st.sidebar.header("Settings")
 
 # 1. Accept a comma-separated list of tickers
 ticker_input = st.sidebar.text_input("Stock Tickers (comma-separated)", value="AAPL, MSFT").upper().strip()
-tickers = [t.strip() for t in ticker_input.split(",") if t.strip()]
+# Deduplicate while preserving order to protect matrix math in Tab 3
+tickers = list(dict.fromkeys([t.strip() for t in ticker_input.split(",") if t.strip()]))
 
 # 2. Validate that there are between 2 and 5 tickers
 if not (2 <= len(tickers) <= 5):
-    st.sidebar.warning("Please enter between 2 and 5 valid ticker symbols.")
+    st.sidebar.warning("Please enter between 2 and 5 valid, unique ticker symbols.")
     st.stop()
 
 # Default date range: one year back from today
@@ -47,8 +48,24 @@ if (end_date - start_date).days < 365:
     st.sidebar.error("The date range must be at least 1 year (365 days).")
     st.stop()
 
+# -- About & Methodology Section --------------------------
+with st.sidebar.expander("ℹ️ About & Methodology"):
+    st.write("""
+    **Project Overview:**
+    This application facilitates multi-stock comparison and risk analysis using modern portfolio theory principles.
+    
+    **Key Assumptions & Methodology:**
+    * **Data Source:** Real-time financial data is retrieved from **Yahoo Finance** using the `yfinance` library.
+    * **Daily Simple Returns:** Calculated as $P_t / P_{t-1} - 1$ using Adjusted Close prices to account for splits and dividends.
+    * **Annualization:** All metrics are annualized assuming **252 trading days**. Volatility is scaled by $\sqrt{252}$.
+    * **Wealth Index:** Simulates the cumulative growth of a **$10,000** initial investment.
+    * **Portfolio Modeling:** Uses the standard variance-covariance method for two-asset portfolios.
+    * **Distribution Analysis:** Uses the **Jarque-Bera test** and **Maximum Likelihood Estimation (MLE)** to compare returns against a theoretical normal distribution.
+    * **Data Handling:** Missing data is handled via listwise deletion to ensure all assets are analyzed over an identical, overlapping time period.
+    """)
+
 # -- Data download ----------------------------------------
-@st.cache_data(show_spinner="Fetching data...", ttl=3600)
+@st.cache_data(show_spinner="Fetching data from Yahoo Finance...", ttl=3600)
 def load_data(ticker_list: list, start: date, end: date) -> pd.DataFrame:
     """Download daily adjusted close data from Yahoo Finance."""
     download_list = ticker_list + ["^GSPC"]
@@ -104,8 +121,9 @@ if df.empty:
 valid_user_tickers = [t for t in tickers if t in df.columns]
 
 # -- Calculations -----------------------------------------
-# Compute daily simple returns
-returns = df.pct_change().dropna()
+with st.spinner("Calculating financial metrics..."):
+    # Compute daily simple returns
+    returns = df.pct_change().dropna()
 
 # -- Tabs Setup -------------------------------------------
 tab1, tab2, tab3 = st.tabs(["Price & Returns", "Risk & Distribution", "Correlation & Portfolio"])
@@ -127,11 +145,11 @@ with tab1:
     )
 
     fig_price = go.Figure()
-    # Loop through the WIDGET selection instead of all tickers
     for col in selected_price_tickers:
         fig_price.add_trace(go.Scatter(x=df.index, y=df[col], mode="lines", name=col, line=dict(width=1.5)))
     
     fig_price.update_layout(
+        title="Daily Adjusted Closing Prices",
         yaxis_title="Price (USD)", 
         xaxis_title="Date",
         template="plotly_white", 
@@ -169,39 +187,33 @@ with tab1:
     # 3. Cumulative Wealth Index
     st.subheader("Cumulative Wealth Index ($10,000 Investment)")
     
-    # Create a copy of returns to calculate the Equal-Weight portfolio
-    wealth_returns = returns.copy()
-    wealth_returns["Equal-Weight Portfolio"] = wealth_returns[valid_user_tickers].mean(axis=1)
-    
-    # Calculate cumulative wealth
-    wealth_index = 10000 * (1 + wealth_returns).cumprod()
-    
-    # We prepend a starting row of $10,000 at the day before the first return
-    # to make the chart start cleanly at $10,000 for all assets.
-    start_dt = wealth_index.index[0] - timedelta(days=1)
-    start_row = pd.DataFrame([[10000] * len(wealth_index.columns)], columns=wealth_index.columns, index=[start_dt])
-    wealth_index = pd.concat([start_row, wealth_index])
-
-    fig_wealth = go.Figure()
-    
-    # Plot individual stocks
-    for col in valid_user_tickers:
-        fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index[col], mode="lines", name=col, line=dict(width=1.5, dash='dot')))
+    with st.spinner("Rendering wealth index..."):
+        wealth_returns = returns.copy()
+        wealth_returns["Equal-Weight Portfolio"] = wealth_returns[valid_user_tickers].mean(axis=1)
         
-    # Plot S&P 500
-    fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index["^GSPC"], mode="lines", name="S&P 500", line=dict(width=2, color='gray')))
-    
-    # Plot Equal-Weight Portfolio
-    fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index["Equal-Weight Portfolio"], mode="lines", name="Equal-Weight Portfolio", line=dict(width=3, color='black')))
+        wealth_index = 10000 * (1 + wealth_returns).cumprod()
+        
+        start_dt = wealth_index.index[0] - timedelta(days=1)
+        start_row = pd.DataFrame([[10000] * len(wealth_index.columns)], columns=wealth_index.columns, index=[start_dt])
+        wealth_index = pd.concat([start_row, wealth_index])
 
-    fig_wealth.update_layout(
-        yaxis_title="Portfolio Value (USD)", 
-        xaxis_title="Date",
-        template="plotly_white", 
-        height=500,
-        hovermode="x unified"
-    )
-    st.plotly_chart(fig_wealth, use_container_width=True)
+        fig_wealth = go.Figure()
+        
+        for col in valid_user_tickers:
+            fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index[col], mode="lines", name=col, line=dict(width=1.5, dash='dot')))
+            
+        fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index["^GSPC"], mode="lines", name="S&P 500", line=dict(width=2, color='gray')))
+        fig_wealth.add_trace(go.Scatter(x=wealth_index.index, y=wealth_index["Equal-Weight Portfolio"], mode="lines", name="Equal-Weight Portfolio", line=dict(width=3, color='black')))
+
+        fig_wealth.update_layout(
+            title="Cumulative Wealth ($10,000 Initial Investment)",
+            yaxis_title="Portfolio Value (USD)", 
+            xaxis_title="Date",
+            template="plotly_white", 
+            height=500,
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_wealth, use_container_width=True)
 
 # =========================================================
 # TAB 2: Risk & Distribution
@@ -224,7 +236,6 @@ with tab2:
         index=0
     )
     
-    # Check if we have enough trading days to calculate the selected window
     if len(returns) <= vol_window:
         st.warning(
             f"⚠️ Not enough data to calculate a {vol_window}-day rolling volatility. "
@@ -232,21 +243,22 @@ with tab2:
             "Please select a longer date range in the sidebar."
         )
     else:
-        # Calculate rolling standard deviation and annualize
-        rolling_vol = returns[valid_user_tickers].rolling(window=vol_window).std() * np.sqrt(252)
-        
-        fig_rolling_vol = go.Figure()
-        for col in valid_user_tickers:
-            fig_rolling_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol[col], mode="lines", name=col, line=dict(width=1.5)))
+        with st.spinner("Calculating rolling volatility..."):
+            rolling_vol = returns[valid_user_tickers].rolling(window=vol_window).std() * np.sqrt(252)
             
-        fig_rolling_vol.update_layout(
-            yaxis_title="Annualized Volatility", 
-            xaxis_title="Date",
-            template="plotly_white", 
-            height=450,
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig_rolling_vol, use_container_width=True)
+            fig_rolling_vol = go.Figure()
+            for col in valid_user_tickers:
+                fig_rolling_vol.add_trace(go.Scatter(x=rolling_vol.index, y=rolling_vol[col], mode="lines", name=col, line=dict(width=1.5)))
+                
+            fig_rolling_vol.update_layout(
+                title=f"{vol_window}-Day Rolling Annualized Volatility",
+                yaxis_title="Annualized Volatility", 
+                xaxis_title="Date",
+                template="plotly_white", 
+                height=450,
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig_rolling_vol, use_container_width=True)
 
     st.markdown("---")
 
@@ -258,7 +270,6 @@ with tab2:
     # 4. Normality Test (Jarque-Bera)
     jb_stat, jb_pval = stats.jarque_bera(dist_returns)
     st.write(f"**Jarque-Bera Test for {selected_dist_stock}:**")
-    # Changed .4f to .4e to display the p-value in scientific/exponential notation
     st.write(f"Test Statistic: {jb_stat:.4f} | p-value: {jb_pval:.4e}")
     
     if jb_pval < 0.05:
@@ -270,11 +281,9 @@ with tab2:
     plot_type = st.radio("Select Plot Type:", options=["Histogram with Normal Curve", "Q-Q Plot"], horizontal=True)
     
     if plot_type == "Histogram with Normal Curve":
-        # Fit normal distribution
         mu, std = stats.norm.fit(dist_returns)
         
         fig_dist = go.Figure()
-        # Histogram of returns
         fig_dist.add_trace(go.Histogram(
             x=dist_returns, 
             histnorm='probability density', 
@@ -283,7 +292,6 @@ with tab2:
             marker_color='royalblue'
         ))
         
-        # Normal Curve overlay
         xmin, xmax = dist_returns.min(), dist_returns.max()
         x_range = np.linspace(xmin, xmax, 100)
         p = stats.norm.pdf(x_range, mu, std)
@@ -305,11 +313,9 @@ with tab2:
         st.plotly_chart(fig_dist, use_container_width=True)
 
     else:
-        # Q-Q Plot
         (osm, osr), (slope, intercept, r) = stats.probplot(dist_returns, dist="norm", fit=True)
         
         fig_qq = go.Figure()
-        # Scatter of quantiles
         fig_qq.add_trace(go.Scatter(
             x=osm, 
             y=osr, 
@@ -318,7 +324,6 @@ with tab2:
             marker=dict(color='royalblue', size=6)
         ))
         
-        # Line of best fit representing theoretical normal distribution
         x_line = np.array([np.min(osm), np.max(osm)])
         y_line = slope * x_line + intercept
         fig_qq.add_trace(go.Scatter(
@@ -352,6 +357,7 @@ with tab2:
         ))
         
     fig_box.update_layout(
+        title="Distribution of Daily Returns by Stock",
         yaxis_title="Daily Return",
         xaxis_title="Stock",
         template="plotly_white",
@@ -384,6 +390,8 @@ with tab3:
     
     fig_corr.update_layout(
         title="Pairwise Correlation of Daily Returns",
+        xaxis_title="Stock",
+        yaxis_title="Stock",
         height=500,
         template="plotly_white"
     )
@@ -398,14 +406,12 @@ with tab3:
     with col1:
         stock_a = st.selectbox("Select Stock A:", options=valid_user_tickers, index=0)
     with col2:
-        # Default to the second stock if available, otherwise default to the first
         default_b_idx = 1 if len(valid_user_tickers) > 1 else 0
         stock_b = st.selectbox("Select Stock B:", options=valid_user_tickers, index=default_b_idx)
         
     col3, col4 = st.columns(2)
     
     with col3:
-        # Scatter Plot
         fig_scatter = go.Figure()
         fig_scatter.add_trace(go.Scatter(
             x=returns[stock_a],
@@ -424,7 +430,6 @@ with tab3:
         st.plotly_chart(fig_scatter, use_container_width=True)
         
     with col4:
-        # Rolling Correlation
         roll_corr_window = st.selectbox(
             "Rolling Correlation Window (Trading Days):", 
             options=[21, 63, 126, 252], 
@@ -434,7 +439,7 @@ with tab3:
                 126: "126 Days (6 Months)", 
                 252: "252 Days (1 Year)"
             }.get(x),
-            index=1 # Default to 63 Days (3 Months)
+            index=1
         )
         
         if len(returns) > roll_corr_window:
@@ -464,67 +469,61 @@ with tab3:
     # 3. Two-Asset Portfolio Explorer
     st.subheader("Two-Asset Portfolio Explorer")
     
-    # Get annualized stats for the two selected assets
-    ann_ret_a = returns[stock_a].mean() * 252
-    ann_ret_b = returns[stock_b].mean() * 252
-    
-    # Annualized Covariance Matrix
-    cov_matrix = returns[[stock_a, stock_b]].cov() * 252
-    var_a = cov_matrix.loc[stock_a, stock_a]
-    var_b = cov_matrix.loc[stock_b, stock_b]
-    cov_ab = cov_matrix.loc[stock_a, stock_b]
-    
-    weight_a_pct = st.slider(f"Weight of {stock_a} (%)", min_value=0, max_value=100, value=50, step=1)
-    w_a = weight_a_pct / 100.0
-    w_b = 1.0 - w_a
-    
-    # Calculate current portfolio metrics
-    port_ret = (w_a * ann_ret_a) + (w_b * ann_ret_b)
-    port_var = (w_a**2 * var_a) + (w_b**2 * var_b) + (2 * w_a * w_b * cov_ab)
-    port_vol = np.sqrt(port_var)
-    
-    col_metric1, col_metric2 = st.columns(2)
-    col_metric1.metric("Portfolio Annualized Return", f"{port_ret:.2%}")
-    col_metric2.metric("Portfolio Annualized Volatility", f"{port_vol:.2%}")
-    
-    # Generate the Volatility Curve
-    weights_a_array = np.linspace(0, 1, 101)
-    weights_b_array = 1.0 - weights_a_array
-    
-    # Vectorized portfolio variance calculation
-    port_vols = np.sqrt(
-        (weights_a_array**2 * var_a) + 
-        (weights_b_array**2 * var_b) + 
-        (2 * weights_a_array * weights_b_array * cov_ab)
-    )
-    
-    fig_curve = go.Figure()
-    # Plot the curve
-    fig_curve.add_trace(go.Scatter(
-        x=weights_a_array * 100,
-        y=port_vols,
-        mode='lines',
-        name="Portfolio Volatility Curve",
-        line=dict(color='darkblue', width=2)
-    ))
-    
-    # Plot the current position
-    fig_curve.add_trace(go.Scatter(
-        x=[weight_a_pct],
-        y=[port_vol],
-        mode='markers',
-        name="Current Portfolio",
-        marker=dict(color='red', size=12, symbol='star')
-    ))
-    
-    fig_curve.update_layout(
-        title="Diversification Effect: Portfolio Volatility vs. Asset Weight",
-        xaxis_title=f"Weight of {stock_a} (%)",
-        yaxis_title="Portfolio Annualized Volatility",
-        template="plotly_white",
-        height=450,
-        hovermode="x"
-    )
+    with st.spinner("Calculating portfolio diversification models..."):
+        ann_ret_a = returns[stock_a].mean() * 252
+        ann_ret_b = returns[stock_b].mean() * 252
+        
+        cov_matrix = returns[[stock_a, stock_b]].cov() * 252
+        var_a = cov_matrix.loc[stock_a, stock_a]
+        var_b = cov_matrix.loc[stock_b, stock_b]
+        cov_ab = cov_matrix.loc[stock_a, stock_b]
+        
+        weight_a_pct = st.slider(f"Weight of {stock_a} (%)", min_value=0, max_value=100, value=50, step=1)
+        w_a = weight_a_pct / 100.0
+        w_b = 1.0 - w_a
+        
+        port_ret = (w_a * ann_ret_a) + (w_b * ann_ret_b)
+        port_var = (w_a**2 * var_a) + (w_b**2 * var_b) + (2 * w_a * w_b * cov_ab)
+        port_vol = np.sqrt(port_var)
+        
+        col_metric1, col_metric2 = st.columns(2)
+        col_metric1.metric("Portfolio Annualized Return", f"{port_ret:.2%}")
+        col_metric2.metric("Portfolio Annualized Volatility", f"{port_vol:.2%}")
+        
+        weights_a_array = np.linspace(0, 1, 101)
+        weights_b_array = 1.0 - weights_a_array
+        
+        port_vols = np.sqrt(
+            (weights_a_array**2 * var_a) + 
+            (weights_b_array**2 * var_b) + 
+            (2 * weights_a_array * weights_b_array * cov_ab)
+        )
+        
+        fig_curve = go.Figure()
+        fig_curve.add_trace(go.Scatter(
+            x=weights_a_array * 100,
+            y=port_vols,
+            mode='lines',
+            name="Portfolio Volatility Curve",
+            line=dict(color='darkblue', width=2)
+        ))
+        
+        fig_curve.add_trace(go.Scatter(
+            x=[weight_a_pct],
+            y=[port_vol],
+            mode='markers',
+            name="Current Portfolio",
+            marker=dict(color='red', size=12, symbol='star')
+        ))
+        
+        fig_curve.update_layout(
+            title="Diversification Effect: Portfolio Volatility vs. Asset Weight",
+            xaxis_title=f"Weight of {stock_a} (%)",
+            yaxis_title="Portfolio Annualized Volatility",
+            template="plotly_white",
+            height=450,
+            hovermode="x"
+        )
     st.plotly_chart(fig_curve, use_container_width=True)
     
     st.info(
